@@ -1,0 +1,925 @@
+---
+title: "Striped bass occupancy analyses"
+author: "Tyler Pilger"
+date: "4/26/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## Intro
+
+Analyses were assisted with code from the following sources
+<https://cran.r-project.org/web/packages/unmarked/vignettes/colext.pdf>  
+<https://doi90.github.io/lodestar/fitting-occupancy-models-with-unmarked.html>   
+<https://jamesepaterson.github.io/jamespatersonblog/2021-01-01_dynamicoccupancy.html>  
+
+Load the library and data. Set random seed so that results from bootstrapped SE are repeatable
+
+```{r load}
+# set working directory (change file pathway for your PC/Mac)
+setwd("~/OneDrive - ucsc.edu/FISHBIO/Capstone Project/Occupancy Models/Approach 1B/R Markdown")
+
+# load necessary library
+library(unmarked)
+
+# load pre-sorted data
+load('STB_occupancy_data.rdata')
+
+# random number
+set.seed(12345)
+# set number of bootstraps
+bts=100 # Set to 100 for final run, will take several minutes
+```
+
+## 2019
+### Models for STB < 300 mm
+
+Observation covariates are scaled and unscaled. Using unscaled but should check results using scaled.
+
+
+```{r 2019small, echo=TRUE, results='hide', warning=FALSE}
+# ensure data is consistent with respect to NAs #
+fishNAs <- which( is.na(stb.ltSC.2019[,-c(1,2,3)]) == T )
+flowNAs <- which( is.na(observation.covariates.2019.unscaled$flow) )
+effortNAs <- which( is.na(observation.covariates.2019.unscaled$effort) )
+dayNAs <- which( is.na(observation.covariates.2019.unscaled$day) )
+
+allNAs <- unique( sort( c( fishNAs, flowNAs, effortNAs, dayNAs )))
+
+observation.covariates.2019.unscaled$flow[allNAs] <- NA
+observation.covariates.2019.unscaled$effort[allNAs] <- NA
+observation.covariates.2019.unscaled$day[allNAs] <- NA
+
+# length( which( is.na( site.covariates.scaled ))) # should be 0
+
+# year specific dates for primary sampling events
+yearlysitecovs = list( date = matrix(  c( rep(70,39), rep(99,39), rep(126,39), rep(163,39)), 
+                                      nrow = 39, byrow = F))
+
+# assign catch data
+stb.y <- stb.ltSC.2019[,-c(1,2,3)]
+dimnames(stb.y)[[2]] <- paste( "y", 1:ncol(stb.y), sep=".")
+sum(na.exclude(stb.y))
+
+# convert to binary data
+# stb.y
+stb.bin = ifelse( stb.y >= 1, 1, 0 )
+# stb.bin
+stb.bin[allNAs] <- NA
+
+# run models
+umf <- unmarkedMultFrame(y= stb.bin,
+                         siteCovs = site.covariates.unscaled,
+                         obsCovs = observation.covariates.2019.unscaled,
+                         yearlySiteCovs = yearlysitecovs,
+                         numPrimary = 4)
+# umf
+# ~psi, ~col, ~ext, ~det #
+dm0 <- colext( ~1, ~1, ~1, ~1, umf )
+dm1 <- colext( ~ 1, ~ 1, ~ 1, ~ flow, umf)
+dm2 <- colext( ~ 1, ~ 1, ~ 1, ~ effort, umf)
+dm3 <- colext( ~ 1, ~ 1, ~ 1, ~ flow + effort, umf)
+dm4 <- colext( ~ 1, ~ date, ~ 1, ~ flow, umf)
+dm5 <- colext( ~ 1, ~ date, ~ 1, ~ effort, umf)
+dm6 <- colext( ~ 1, ~ date, ~ 1, ~ flow + effort, umf)
+dm7 <- colext( ~ rkm, ~ date, ~ 1, ~ flow, umf)
+dm8 <- colext( ~ rkm, ~ date, ~ 1, ~ effort, umf)
+dm9 <- colext( ~ rkm, ~ date, ~ 1, ~ flow + effort, umf)
+dm10 <- colext( ~ rkm, ~ date, ~ date, ~ flow, umf)
+dm11 <- colext( ~ rkm, ~ date, ~ date, ~ effort, umf)
+dm12 <- colext( ~ rkm, ~ date, ~ date, ~ flow + effort, umf)
+
+models = list( 'Null' = dm0,
+               'det~flow'= dm1,
+               'det~effort' = dm2, 
+               'det~flow+effort' = dm3,
+               'col~date, det~flow' = dm4,
+               'col~date, det~effort' = dm5, 
+               'col~date, det~flow+effort' = dm6, 
+               'psi~rkm, col~date, det~flow' = dm7, 
+               'psi~rkm, col~date, det~effort' = dm8, 
+               'psi~rkm, col~date, det~flow+effort' = dm9, 
+               'psi~rkm, col~date, ext~date, det~flow' = dm10,
+               'psi~rkm, col~date, ext~date, det~effort' = dm11,
+               'psi~rkm, col~date, ext~date, det~flow+effort' = dm12 )
+
+dm2019_STBlt300_List <- fitList(fits = models)
+```
+
+Look at AIC table comparing all models
+
+```{r 2019smallAIC, echo=TRUE, warning=FALSE}
+AICtable_2019_STBlt300 = modSel(dm2019_STBlt300_List, nullmod="Null")
+AICtable_2019_STBlt300
+
+top.model.2019lt = dm8
+summary(top.model.2019lt)
+```
+Top model is dm8.   
+
+Use top model to predict occupancy and use bootstrap to estimate standard errors. The number of bootstraps to perform should be B > 100 which will take some time
+
+
+```{r 2019smallPred, echo=TRUE}
+# run predict function with a new data set #
+# nd is providing data similar to what the top model has #
+nd = data.frame( rkm = seq(0, 65, length.out = 100), 
+                 date = seq(60, 180, length.out = 100), 
+                 effort = seq(100, 1500, length.out = 100))
+# nd
+col.preds <- predict( top.model.2019lt, type = 'col', newdata = nd)
+# col.preds
+psi.preds <- predict( top.model.2019lt, type = 'psi', newdata = nd)
+det.preds <- predict( top.model.2019lt, type = 'det', newdata = nd)
+
+# mean predicted occupancy among sites
+m1.2019.lt <- nonparboot( top.model.2019lt, B = 100 )
+pred.2019.lt <- data.frame( event = 1:4,
+                             smoothed_occ = smoothed(top.model.2019lt)[2,], 
+                             SE = m1.2019.lt@smoothed.mean.bsse[2,] )
+
+# naive estimates of occupancy
+props19lt <- colSums(stb.bin, na.rm = T)/apply(stb.y, 2, function(x) length(na.exclude(x)))
+
+# make prediction plots here w/ respect to covariates of top model AND
+  # provide estimates and uncertainty of occupancy
+par(mfrow = c(2,2), mar = c(4,4,2,2))
+ylim = c(0,1)
+plot( nd$date, col.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Date', ylab = 'P(Colonization)')
+lines( nd$date, col.preds$lower )
+lines( nd$date, col.preds$upper )
+plot( nd$rkm, psi.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1, ylab = 'Initial Occupancy', ylim = ylim, 
+      xlab = 'River Kilometer')
+lines( nd$rkm, psi.preds$lower )
+lines( nd$rkm, psi.preds$upper )
+plot( nd$effort, det.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Effort (Seconds)', ylab = 'P(Detection)')
+lines( nd$effort, det.preds$lower )
+lines( nd$effort, det.preds$upper )
+
+plot( pred.2019.lt$event, pred.2019.lt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = 'Event', ylab = 'Occupancy Estimate +/- 1 SE', axes = F)
+# add naive estimate of occupancy #
+points( pred.2019.lt$event, c( mean( props19lt[1:2]), mean( props19lt[3:4]), mean( props19lt[5:6]), mean( props19lt[7:8]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2019.lt$event, pred.2019.lt$smoothed_occ + pred.2019.lt$SE, pred.2019.lt$event, pred.2019.lt$smoothed_occ - pred.2019.lt$SE, lwd = 2, lend =2)
+points( pred.2019.lt$event, pred.2019.lt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:4, labels = 1:4 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+legend( 1.2, 0.95, c( 'Naive Estimate', 'Model Estimate'), pch =21, pt.cex = 2, pt.bg = c( 'grey80', 'grey50'), bty = 'n', cex =1.1)
+box( 'plot')
+mtext( side = 3, line = -1, outer = T, '2019 - Striped bass < 300 mm FL', adj = 0, cex = 1.2 )
+
+```
+
+### Models for STB ≥ 300 mm
+
+```{r 2019large, echo=TRUE, results='hide', warning=FALSE}
+# assign catch data
+stb.y <- stb.gtSC.2019[,-c(1,2,3)]
+dimnames(stb.y)[[2]] <- paste( "y", 1:ncol(stb.y), sep=".")
+sum(na.exclude(stb.y))
+
+# convert to binary data
+stb.y
+stb.bin = ifelse( stb.y >= 1, 1, 0 )
+stb.bin
+stb.bin[allNAs] <- NA
+
+# run models
+umf <- unmarkedMultFrame(y= stb.bin,
+                         siteCovs = site.covariates.unscaled,
+                         obsCovs=observation.covariates.2019.unscaled,
+                         yearlySiteCovs= yearlysitecovs,
+                         numPrimary=4)
+umf
+# ~psi, ~col, ~ext, ~det #
+dm0 <- colext( ~1, ~1, ~1, ~1, umf )
+dm1 <- colext( ~ 1, ~ 1, ~ 1, ~ flow, umf)
+dm2 <- colext( ~ 1, ~ 1, ~ 1, ~ effort, umf)
+dm3 <- colext( ~ 1, ~ 1, ~ 1, ~ flow + effort, umf)
+dm4 <- colext( ~ 1, ~ date, ~ 1, ~ flow, umf)
+dm5 <- colext( ~ 1, ~ date, ~ 1, ~ effort, umf)
+dm6 <- colext( ~ 1, ~ date, ~ 1, ~ flow + effort, umf)
+dm7 <- colext( ~ rkm, ~ date, ~ 1, ~ flow, umf)
+dm8 <- colext( ~ rkm, ~ date, ~ 1, ~ effort, umf)
+dm9 <- colext( ~ rkm, ~ date, ~ 1, ~ flow + effort, umf)
+dm10 <- colext( ~ rkm, ~ date, ~ date, ~ flow, umf)
+dm11 <- colext( ~ rkm, ~ date, ~ date, ~ effort, umf)
+dm12 <- colext( ~ rkm, ~ date, ~ date, ~ flow + effort, umf)
+
+models = list( 'Null' = dm0,
+               'det~flow'= dm1,
+               'det~effort' = dm2, 
+               'det~flow+effort' = dm3,
+               'col~date, det~flow' = dm4,
+               'col~date, det~effort' = dm5, 
+               'col~date, det~flow+effort' = dm6, 
+               'psi~rkm, col~date, det~flow' = dm7, 
+               'psi~rkm, col~date, det~effort' = dm8, 
+               'psi~rkm, col~date, det~flow+effort' = dm9, 
+               'psi~rkm, col~date, ext~date, det~flow' = dm10,
+               'psi~rkm, col~date, ext~date, det~effort' = dm11,
+               'psi~rkm, col~date, ext~date, det~flow+effort' = dm12 )
+
+dm2019_STBgt300_List <- fitList(fits = models)
+```
+
+Look at AIC table comparing all models
+
+```{r 2019largeAIC, echo=TRUE, warning=FALSE}
+AICtable_2019_STBgt300 = modSel(dm2019_STBgt300_List, nullmod="Null")
+AICtable_2019_STBgt300
+
+top.model.2019gt = dm8
+summary(top.model.2019gt)
+```
+
+Top model is dm8.    
+
+Use top model to predict occupancy and use bootstrap to estimate standard errors. The number of bootstraps to perform should be B > 100 which will take some time
+
+
+```{r 2019largePred, echo=TRUE}
+# run predict function with a new data set #
+# nd is providing data similar to what the top model has #
+nd = data.frame( rkm = seq(0, 65, length.out = 100), 
+                 date = seq(60, 180, length.out = 100), 
+                 effort = seq(100, 1500, length.out = 100))
+# nd
+col.preds <- predict( top.model.2019gt, type = 'col', newdata = nd)
+# col.preds
+psi.preds <- predict( top.model.2019gt, type = 'psi', newdata = nd)
+det.preds <- predict( top.model.2019gt, type = 'det', newdata = nd)
+
+# mean predicted occupancy among sites
+m1.2019.gt <- nonparboot( top.model.2019gt, B = 100)
+pred.2019.gt <- data.frame(event = 1:4,
+                           smoothed_occ = smoothed(top.model.2019gt)[2,], 
+                           SE = m1.2019.gt@smoothed.mean.bsse[2,] )
+
+# naive estimates of occupancy
+props19gt <- colSums(stb.bin, na.rm = T)/apply(stb.y, 2, function(x) length(na.exclude(x)))
+
+# make prediction plots here w/ respect to covariates of top model AND
+# provide estimates and uncertainty of occupancy
+par(mfrow=c(2,2), mar = c(4,4,2,2))
+ylim = c(0,1)
+plot( nd$date, col.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Date', ylab = 'P(Colonization)')
+lines( nd$date, col.preds$lower )
+lines( nd$date, col.preds$upper )
+plot( nd$rkm, psi.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1, ylab = 'Initial Occupancy', ylim = ylim, 
+      xlab = 'River Kilometer')
+lines( nd$rkm, psi.preds$lower )
+lines( nd$rkm, psi.preds$upper )
+plot( nd$effort, det.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Effort (Seconds)', ylab = 'P(Detection)')
+lines( nd$effort, det.preds$lower )
+lines( nd$effort, det.preds$upper )
+
+plot( pred.2019.gt$event, pred.2019.gt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = 'Event', ylab = 'Occupancy Estimate +/- 1 SE', axes = F)
+# add naive estimate of occupancy #
+points( pred.2019.gt$event, c( mean( props19gt[1:2]), mean( props19gt[3:4]), mean( props19gt[5:6]), mean( props19gt[7:8]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2019.gt$event, pred.2019.gt$smoothed_occ + pred.2019.gt$SE, 
+          pred.2019.gt$event, pred.2019.gt$smoothed_occ - pred.2019.gt$SE, lwd = 2, lend =2)
+points( pred.2019.gt$event, pred.2019.gt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:4, labels = 1:4 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+legend( 1.2, 0.95, c( 'Naive Estimate', 'Model Estimate'), pch =21, pt.cex = 2, 
+        pt.bg = c( 'grey80', 'grey50'), bty = 'n', cex =1.1)
+box( 'plot')
+mtext( side = 3, line = -1, outer = T, '2019 - Striped bass ≥ 300 mm FL', adj = 0, cex = 1.2 )
+
+```
+
+
+## 2020
+### Models for STB < 300 mm
+
+```{r 2020small, echo=TRUE, results='hide', warning=FALSE}
+# ensure data is consistent with respect to NAs #
+fishNAs <- which( is.na(stb.ltSC.2020[,-c(1,2,3)]) == T )
+flowNAs <- which( is.na(observation.covariates.2020.unscaled$flow) )
+effortNAs <- which( is.na(observation.covariates.2020.unscaled$effort) )
+dayNAs <- which( is.na(observation.covariates.2020.unscaled$day) )
+
+allNAs <- unique( sort( c( fishNAs, flowNAs, effortNAs, dayNAs )))
+
+observation.covariates.2020.unscaled$flow[allNAs] <- NA
+observation.covariates.2020.unscaled$effort[allNAs] <- NA
+observation.covariates.2020.unscaled$day[allNAs] <- NA
+
+# length( which( is.na( site.covariates.scaled ))) # should be 0
+
+# year specific dates for primary sampling events
+yearlysitecovs = list( date = matrix( c( rep(34,39), rep(64,39), rep(139,39), rep(163,39)),
+                                      nrow = 39, byrow = F))
+
+# assign catch data
+stb.y <- stb.ltSC.2020[,-c(1,2,3)]
+dimnames(stb.y)[[2]] <- paste( "y", 1:ncol(stb.y), sep=".")
+sum(na.exclude(stb.y))
+
+# convert to binary data
+# stb.y
+stb.bin = ifelse( stb.y >= 1, 1, 0 )
+# stb.bin
+stb.bin[allNAs] <- NA
+
+# run models
+umf <- unmarkedMultFrame(y= stb.bin,
+                         siteCovs = site.covariates.unscaled,
+                         obsCovs=observation.covariates.2020.unscaled,
+                         yearlySiteCovs= yearlysitecovs,
+                         numPrimary=4)
+# umf
+# ~psi, ~col, ~ext, ~det #
+dm0 <- colext( ~1, ~1, ~1, ~1, umf )
+dm1 <- colext( ~ 1, ~ 1, ~ 1, ~ flow, umf)
+dm2 <- colext( ~ 1, ~ 1, ~ 1, ~ effort, umf)
+dm3 <- colext( ~ 1, ~ 1, ~ 1, ~ flow + effort, umf)
+dm4 <- colext( ~ 1, ~ date, ~ 1, ~ flow, umf)
+dm5 <- colext( ~ 1, ~ date, ~ 1, ~ effort, umf)
+dm6 <- colext( ~ 1, ~ date, ~ 1, ~ flow + effort, umf)
+dm7 <- colext( ~ rkm, ~ date, ~ 1, ~ flow, umf)
+dm8 <- colext( ~ rkm, ~ date, ~ 1, ~ effort, umf)
+dm9 <- colext( ~ rkm, ~ date, ~ 1, ~ flow + effort, umf)
+dm10 <- colext( ~ rkm, ~ date, ~ date, ~ flow, umf)
+dm11 <- colext( ~ rkm, ~ date, ~ date, ~ effort, umf)
+dm12 <- colext( ~ rkm, ~ date, ~ date, ~ flow + effort, umf)
+
+models = list( 'Null' = dm0,
+               'det~flow'= dm1,
+               'det~effort' = dm2, 
+               'det~flow+effort' = dm3,
+               'col~date, det~flow' = dm4,
+               'col~date, det~effort' = dm5, 
+               'col~date, det~flow+effort' = dm6, 
+               'psi~rkm, col~date, det~flow' = dm7, 
+               'psi~rkm, col~date, det~effort' = dm8, 
+               'psi~rkm, col~date, det~flow+effort' = dm9, 
+               'psi~rkm, col~date, ext~date, det~flow' = dm10,
+               'psi~rkm, col~date, ext~date, det~effort' = dm11,
+               'psi~rkm, col~date, ext~date, det~flow+effort' = dm12 )
+
+dm2020_STBlt300_List <- fitList(fits = models)
+```
+
+Look at AIC table comparing all models
+
+```{r 2020smallAIC, echo=TRUE, warning=FALSE}
+AICtable_2020_STBlt300 = modSel(dm2020_STBlt300_List, nullmod="Null")
+AICtable_2020_STBlt300
+
+top.model.2020lt = dm0
+summary(top.model.2020lt)
+```
+
+Top model here is dm0.    
+
+Use top model to predict occupancy and use bootstrap to estimate standard errors. The number of bootstraps to perform should be B > 100 which will take some time
+
+
+```{r 2020smallPred, echo=TRUE}
+# run predict function with a new data set #
+# nd is providing data similar to what the top model has #
+nd = data.frame( rkm = seq(0, 65, length.out = 100), 
+                 date = seq(60, 180, length.out = 100), 
+                 effort = seq(100, 1500, length.out = 100))
+# nd
+col.preds <- predict( top.model.2020lt, type = 'col', newdata = nd)
+# col.preds
+psi.preds <- predict( top.model.2020lt, type = 'psi', newdata = nd)
+det.preds <- predict( top.model.2020lt, type = 'det', newdata = nd)
+
+# mean predicted occupancy among sites
+m1.2020.lt <- nonparboot( top.model.2020lt, B = 100 )
+pred.2020.lt <- data.frame( event = 1:4,
+                             smoothed_occ = smoothed(top.model.2020lt)[2,], 
+                             SE = m1.2020.lt@smoothed.mean.bsse[2,] )
+
+# naive estimates of occupancy
+props20lt <- colSums(stb.bin, na.rm = T)/apply(stb.y, 2, function(x) length(na.exclude(x)))
+
+# make prediction plots here w/ respect to covariates of top model AND
+# provide estimates and uncertainty of occupancy
+par(mfrow=c(2,2), mar = c(4,4,2,2))
+ylim = c(0,1)
+plot( nd$date, col.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Date', ylab = 'P(Colonization)')
+lines( nd$date, col.preds$lower )
+lines( nd$date, col.preds$upper )
+plot( nd$rkm, psi.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1, ylab = 'Initial Occupancy', ylim = ylim, 
+      xlab = 'River Kilometer')
+lines( nd$rkm, psi.preds$lower )
+lines( nd$rkm, psi.preds$upper )
+plot( nd$effort, det.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Effort (Seconds)', ylab = 'P(Detection)')
+lines( nd$effort, det.preds$lower )
+lines( nd$effort, det.preds$upper )
+
+plot( pred.2020.lt$event, pred.2020.lt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = 'Event', ylab = 'Occupancy Estimate +/- 1 SE', axes = F)
+# add naive estimate of occupancy #
+points( pred.2020.lt$event, c( mean( props20lt[1:2]), mean( props20lt[3:4]), mean( props20lt[5:6]), mean( props20lt[7:8]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2020.lt$event, pred.2020.lt$smoothed_occ + pred.2020.lt$SE, pred.2020.lt$event, pred.2020.lt$smoothed_occ - pred.2020.lt$SE, lwd = 2, lend =2)
+points( pred.2020.lt$event, pred.2020.lt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:4, labels = 1:4 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+legend( 1.2, 0.95, c( 'Naive Estimate', 'Model Estimate'), pch =21, pt.cex = 2, 
+        pt.bg = c( 'grey80', 'grey50'), bty = 'n', cex =1.1)
+box( 'plot')
+mtext( side = 3, line = -1, outer = T, '2020 - Striped bass < 300 mm FL', adj = 0, cex = 1.2 )
+
+```
+
+### Models for STB ≥ 300 mm
+
+```{r 2020large, echo=TRUE, results='hide', warning=FALSE}
+# assign catch data
+stb.y <- stb.gtSC.2020[,-c(1,2,3)]
+dimnames(stb.y)[[2]] <- paste( "y", 1:ncol(stb.y), sep=".")
+sum(na.exclude(stb.y))
+
+# convert to binary data
+stb.y
+stb.bin = ifelse( stb.y >= 1, 1, 0 )
+stb.bin
+stb.bin[allNAs] <- NA
+
+# run models
+umf <- unmarkedMultFrame(y= stb.bin,
+                         siteCovs = site.covariates.unscaled,
+                         obsCovs=observation.covariates.2020.unscaled,
+                         yearlySiteCovs= yearlysitecovs,
+                         numPrimary=4)
+umf
+# ~psi, ~col, ~ext, ~det #
+dm0 <- colext( ~1, ~1, ~1, ~1, umf )
+dm1 <- colext( ~ 1, ~ 1, ~ 1, ~ flow, umf)
+dm2 <- colext( ~ 1, ~ 1, ~ 1, ~ effort, umf)
+dm3 <- colext( ~ 1, ~ 1, ~ 1, ~ flow + effort, umf)
+dm4 <- colext( ~ 1, ~ date, ~ 1, ~ flow, umf)
+dm5 <- colext( ~ 1, ~ date, ~ 1, ~ effort, umf)
+dm6 <- colext( ~ 1, ~ date, ~ 1, ~ flow + effort, umf)
+dm7 <- colext( ~ rkm, ~ date, ~ 1, ~ flow, umf)
+dm8 <- colext( ~ rkm, ~ date, ~ 1, ~ effort, umf)
+dm9 <- colext( ~ rkm, ~ date, ~ 1, ~ flow + effort, umf)
+dm10 <- colext( ~ rkm, ~ date, ~ date, ~ flow, umf)
+dm11 <- colext( ~ rkm, ~ date, ~ date, ~ effort, umf)
+dm12 <- colext( ~ rkm, ~ date, ~ date, ~ flow + effort, umf)
+
+models = list( 'Null' = dm0,
+               'det~flow'= dm1,
+               'det~effort' = dm2, 
+               'det~flow+effort' = dm3,
+               'col~date, det~flow' = dm4,
+               'col~date, det~effort' = dm5, 
+               'col~date, det~flow+effort' = dm6, 
+               'psi~rkm, col~date, det~flow' = dm7, 
+               'psi~rkm, col~date, det~effort' = dm8, 
+               'psi~rkm, col~date, det~flow+effort' = dm9, 
+               'psi~rkm, col~date, ext~date, det~flow' = dm10,
+               'psi~rkm, col~date, ext~date, det~effort' = dm11,
+               'psi~rkm, col~date, ext~date, det~flow+effort' = dm12 )
+
+dm2020_STBgt300_List <- fitList(fits = models)
+```
+
+```{r 2020largeAIC, echo=TRUE, warning=FALSE}
+AICtable_2020_STBgt300 = modSel(dm2020_STBgt300_List, nullmod="Null")
+AICtable_2020_STBgt300
+
+top.model.2020gt = dm8
+summary(top.model.2020gt)
+```
+Top model here is dm8.   
+
+Check top model, should be dm8. Also, new data frame nd has date range 60-180 but yearly site covariate date has a different range
+
+```{r 2020largePred, echo=TRUE}
+# run predict function with a new data set #
+# nd is providing data similar to what the top model has #
+nd = data.frame( rkm = seq(0, 65, length.out = 100), 
+                 date = seq(60, 180, length.out = 100), 
+                 effort = seq(100, 1500, length.out = 100))
+# nd
+col.preds <- predict( top.model.2020gt, type = 'col', newdata = nd)
+# col.preds
+psi.preds <- predict( top.model.2020gt, type = 'psi', newdata = nd)
+det.preds <- predict( top.model.2020gt, type = 'det', newdata = nd)
+
+# mean predicted occupancy among sites
+m1.2020.gt <- nonparboot( top.model.2020gt, B = bts )
+pred.2020.gt <- data.frame( event = 1:4,
+                             smoothed_occ = smoothed(top.model.2020gt)[2,], 
+                             SE = m1.2020.gt@smoothed.mean.bsse[2,] )
+
+# naive estimates of occupancy
+props20gt <- colSums(stb.bin, na.rm = T)/apply(stb.y, 2, function(x) length(na.exclude(x)))
+
+# make prediction plots here w/ respect to covariates of top model AND
+# provide estimates and uncertainty of occupancy
+par(mfrow=c(2,2), mar = c(4,4,2,2))
+ylim = c(0,1)
+plot( nd$date, col.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Date', ylab = 'P(Colonization)')
+lines( nd$date, col.preds$lower )
+lines( nd$date, col.preds$upper )
+plot( nd$rkm, psi.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1, ylab = 'Initial Occupancy', ylim = ylim, 
+      xlab = 'River Kilometer')
+lines( nd$rkm, psi.preds$lower )
+lines( nd$rkm, psi.preds$upper )
+plot( nd$effort, det.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Effort (Seconds)', ylab = 'P(Detection)')
+lines( nd$effort, det.preds$lower )
+lines( nd$effort, det.preds$upper )
+
+plot( pred.2020.gt$event, pred.2020.gt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = 'Event', ylab = 'Occupancy Estimate +/- 1 SE', axes = F)
+# add naive estimate of occupancy #
+points( pred.2020.gt$event, c( mean( props20gt[1:2]), mean( props20gt[3:4]), mean( props20gt[5:6]), mean( props20gt[7:8]) ), pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2020.gt$event, pred.2020.gt$smoothed_occ + pred.2020.gt$SE, 
+          pred.2020.gt$event, pred.2020.gt$smoothed_occ - pred.2020.gt$SE, lwd = 2, lend =2)
+points( pred.2020.gt$event, pred.2020.gt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:4, labels = 1:4 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+legend( 1.2, 0.95, c( 'Naive Estimate', 'Model Estimate'), pch =21, pt.cex = 2, pt.bg = c( 'grey80', 'grey50'), bty = 'n', cex =1.1)
+box( 'plot')
+mtext( side = 3, line = -1, outer = T, '2020 - Striped bass ≥ 300 mm FL', adj = 0, cex = 1.2 )
+```
+
+## 2021
+### Models for STB < 300 mm
+
+```{r 2021small, echo=TRUE, results='hide', warning=FALSE}
+# ensure data is consistent with respect to NAs #
+fishNAs <- which( is.na(stb.ltSC.2021[,-c(1,2,3)]) == T )
+flowNAs <- which( is.na(observation.covariates.2021.unscaled$flow) )
+effortNAs <- which( is.na(observation.covariates.2021.unscaled$effort) )
+dayNAs <- which( is.na(observation.covariates.2021.unscaled$day) )
+
+allNAs <- unique( sort( c( fishNAs, flowNAs, effortNAs, dayNAs )))
+
+observation.covariates.2021.unscaled$flow[allNAs] <- NA
+observation.covariates.2021.unscaled$effort[allNAs] <- NA
+observation.covariates.2021.unscaled$day[allNAs] <- NA
+
+# length( which( is.na( site.covariates.scaled ))) # should be 0
+
+# year specific dates for primary sampling events
+yearlysitecovs = list( date = matrix( c( rep(42,39), rep(70,39), rep(90,39), rep(118,39), rep(134,39)),
+                                      nrow = 39, byrow = F))
+
+# assign catch data
+stb.y <- stb.ltSC.2021[,-c(1,2,3)]
+dimnames(stb.y)[[2]] <- paste( "y", 1:ncol(stb.y), sep=".")
+sum(na.exclude(stb.y))
+
+# convert to binary data
+# stb.y
+stb.bin = ifelse( stb.y >= 1, 1, 0 )
+# stb.bin
+stb.bin[allNAs] <- NA
+
+# run models
+umf <- unmarkedMultFrame(y= stb.bin,
+                         siteCovs = site.covariates.unscaled,
+                         obsCovs=observation.covariates.2021.unscaled,
+                         yearlySiteCovs= yearlysitecovs,
+                         numPrimary=5)
+# umf
+# ~psi, ~col, ~ext, ~det #
+dm0 <- colext( ~1, ~1, ~1, ~1, umf )
+dm1 <- colext( ~ 1, ~ 1, ~ 1, ~ flow, umf)
+dm2 <- colext( ~ 1, ~ 1, ~ 1, ~ effort, umf)
+dm3 <- colext( ~ 1, ~ 1, ~ 1, ~ flow + effort, umf)
+dm4 <- colext( ~ 1, ~ date, ~ 1, ~ flow, umf)
+dm5 <- colext( ~ 1, ~ date, ~ 1, ~ effort, umf)
+dm6 <- colext( ~ 1, ~ date, ~ 1, ~ flow + effort, umf)
+dm7 <- colext( ~ rkm, ~ date, ~ 1, ~ flow, umf)
+dm8 <- colext( ~ rkm, ~ date, ~ 1, ~ effort, umf)
+dm9 <- colext( ~ rkm, ~ date, ~ 1, ~ flow + effort, umf)
+dm10 <- colext( ~ rkm, ~ date, ~ date, ~ flow, umf)
+dm11 <- colext( ~ rkm, ~ date, ~ date, ~ effort, umf)
+dm12 <- colext( ~ rkm, ~ date, ~ date, ~ flow + effort, umf)
+
+models = list( 'Null' = dm0,
+               'det~flow'= dm1,
+               'det~effort' = dm2, 
+               'det~flow+effort' = dm3,
+               'col~date, det~flow' = dm4,
+               'col~date, det~effort' = dm5, 
+               'col~date, det~flow+effort' = dm6, 
+               'psi~rkm, col~date, det~flow' = dm7, 
+               'psi~rkm, col~date, det~effort' = dm8, 
+               'psi~rkm, col~date, det~flow+effort' = dm9, 
+               'psi~rkm, col~date, ext~date, det~flow' = dm10,
+               'psi~rkm, col~date, ext~date, det~effort' = dm11,
+               'psi~rkm, col~date, ext~date, det~flow+effort' = dm12 )
+
+dm2021_STBlt300_List <- fitList(fits = models)
+```
+
+```{r 2021smallAIC, echo=TRUE, warning=FALSE}
+AICtable_2021_STBlt300 = modSel(dm2021_STBlt300_List, nullmod="Null")
+AICtable_2021_STBlt300
+
+top.model.2021lt = dm4 
+  # Matt found dm4 to be the top model, which also includes flow, & 
+    # Tyler found issues with using dm9
+summary(top.model.2021lt)
+```
+Top model is dm9.   
+
+Need to check that the correct model gets used here. New data frame does not have flow and crashes. Top model indicates flow should be included
+
+```{r 2021smallPred, echo=TRUE, error=TRUE}
+# run predict function with a new data set #
+# nd is providing data similar to what the top model has #
+nd = data.frame( rkm = seq(0, 65, length.out = 100), 
+                 date = seq(35, 140, length.out = 100), 
+                 effort = seq(100, 1500, length.out = 100),
+                 flow = seq(210, 1350, length.out = 100))
+# nd
+col.preds <- predict( top.model.2021lt, type = 'col', newdata = nd)
+# col.preds
+psi.preds <- predict( top.model.2021lt, type = 'psi', newdata = nd)
+det.preds <- predict( top.model.2021lt, type = 'det', newdata = nd)
+
+# mean predicted occupancy among sites
+m1.2021.lt <- nonparboot( top.model.2021lt, B = 100 )
+pred.2021.lt <- data.frame( event = 1:5,
+                             smoothed_occ = smoothed(top.model.2021lt)[2,], 
+                             SE = m1.2021.lt@smoothed.mean.bsse[2,] )
+
+# naive estimates of occupancy
+props21lt <- colSums(stb.bin, na.rm = T)/apply(stb.y, 2, function(x) length(na.exclude(x)))
+
+# make prediction plots here w/ respect to covariates of top model AND
+# provide estimates and uncertainty of occupancy
+par(mfrow=c(2,2), mar = c(4,4,2,2))
+ylim = c(0,1)
+plot( nd$date, col.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Date', ylab = 'P(Colonization)')
+lines( nd$date, col.preds$lower )
+lines( nd$date, col.preds$upper )
+plot( nd$rkm, psi.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1, ylab = 'Initial Occupancy', ylim = ylim, 
+      xlab = 'River Kilometer')
+lines( nd$rkm, psi.preds$lower )
+lines( nd$rkm, psi.preds$upper )
+plot( nd$effort, det.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Effort (Seconds)', ylab = 'P(Detection)')
+lines( nd$effort, det.preds$lower )
+lines( nd$effort, det.preds$upper )
+
+plot( pred.2021.lt$event, pred.2021.lt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = 'Event', ylab = 'Occupancy Estimate +/- 1 SE', axes = F)
+# add naive estimate of occupancy #
+points( pred.2021.lt$event, c( mean( props21lt[1:2]), mean( props21lt[3:4]), mean( props21lt[5:6]), mean( props21lt[7:8]), mean( props21lt[9:10]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2021.lt$event, pred.2021.lt$smoothed_occ + pred.2021.lt$SE, 
+          pred.2021.lt$event, pred.2021.lt$smoothed_occ - pred.2021.lt$SE, lwd = 2, lend =2)
+points( pred.2021.lt$event, pred.2021.lt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:5, labels = 1:5 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+legend( 1.2, 0.95, c( 'Naive Estimate', 'Model Estimate'), pch =21, pt.cex = 2, 
+        pt.bg = c( 'grey80', 'grey50'), bty = 'n', cex =1.1)
+box( 'plot')
+mtext( side = 3, line = -1, outer = T, '2021 - Striped bass < 300 mm FL', adj = 0, cex = 1.2 )
+```
+
+### Models for STB ≥ 300 mm
+
+```{r 2021large, echo=TRUE, results='hide', warning=FALSE}
+# assign catch data
+stb.y <- stb.gtSC.2021[,-c(1,2,3)]
+dimnames(stb.y)[[2]] <- paste( "y", 1:ncol(stb.y), sep=".")
+sum(na.exclude(stb.y))
+
+# convert to binary data
+stb.y
+stb.bin = ifelse( stb.y >= 1, 1, 0 )
+stb.bin
+stb.bin[allNAs] <- NA
+
+# run models
+umf <- unmarkedMultFrame(y= stb.bin,
+                         siteCovs = site.covariates.unscaled,
+                         obsCovs=observation.covariates.2021.unscaled,
+                         yearlySiteCovs= yearlysitecovs,
+                         numPrimary=5)
+umf
+# ~psi, ~col, ~ext, ~det #
+dm0 <- colext( ~1, ~1, ~1, ~1, umf )
+dm1 <- colext( ~ 1, ~ 1, ~ 1, ~ flow, umf)
+dm2 <- colext( ~ 1, ~ 1, ~ 1, ~ effort, umf)
+dm3 <- colext( ~ 1, ~ 1, ~ 1, ~ flow + effort, umf)
+dm4 <- colext( ~ 1, ~ date, ~ 1, ~ flow, umf)
+dm5 <- colext( ~ 1, ~ date, ~ 1, ~ effort, umf)
+dm6 <- colext( ~ 1, ~ date, ~ 1, ~ flow + effort, umf)
+dm7 <- colext( ~ rkm, ~ date, ~ 1, ~ flow, umf)
+dm8 <- colext( ~ rkm, ~ date, ~ 1, ~ effort, umf)
+dm9 <- colext( ~ rkm, ~ date, ~ 1, ~ flow + effort, umf)
+dm10 <- colext( ~ rkm, ~ date, ~ date, ~ flow, umf)
+dm11 <- colext( ~ rkm, ~ date, ~ date, ~ effort, umf)
+dm12 <- colext( ~ rkm, ~ date, ~ date, ~ flow + effort, umf)
+
+models = list( 'Null' = dm0,
+               'det~flow'= dm1,
+               'det~effort' = dm2, 
+               'det~flow+effort' = dm3,
+               'col~date, det~flow' = dm4,
+               'col~date, det~effort' = dm5, 
+               'col~date, det~flow+effort' = dm6, 
+               'psi~rkm, col~date, det~flow' = dm7, 
+               'psi~rkm, col~date, det~effort' = dm8, 
+               'psi~rkm, col~date, det~flow+effort' = dm9, 
+               'psi~rkm, col~date, ext~date, det~flow' = dm10,
+               'psi~rkm, col~date, ext~date, det~effort' = dm11,
+               'psi~rkm, col~date, ext~date, det~flow+effort' = dm12 )
+
+dm2021_STBgt300_List <- fitList(fits = models)
+```
+
+
+```{r 2021largeAIC, echo=TRUE, warning=FALSE}
+AICtable_2021_STBgt300 = modSel(dm2021_STBgt300_List, nullmod="Null")
+AICtable_2021_STBgt300
+
+top.model.2021gt = dm0
+summary(top.model.2021gt)
+```
+Top model is dm0.   
+
+Check top model, should be dm0? Also, new data frame nd has date range 60-180 but yearly site covariate date has a different range
+
+```{r 2021largePred, echo=TRUE}
+# run predict function with a new data set #
+# nd is providing data similar to what the top model has #
+nd = data.frame( rkm = seq(0, 65, length.out = 100), 
+                 date = seq(60, 180, length.out = 100), 
+                 effort = seq(100, 1500, length.out = 100))
+# nd
+col.preds <- predict( top.model.2021gt, type = 'col', newdata = nd)
+# col.preds
+psi.preds <- predict( top.model.2021gt, type = 'psi', newdata = nd)
+det.preds <- predict( top.model.2021gt, type = 'det', newdata = nd)
+
+# mean predicted occupancy among sites
+m1.2021.gt <- nonparboot( top.model.2021gt, B = 100 )
+pred.2021.gt <- data.frame( event = 1:5,
+                            smoothed_occ = smoothed(top.model.2021gt)[2,], 
+                            SE = m1.2021.gt@smoothed.mean.bsse[2,] )
+
+# naive estimates of occupancy
+props21gt <- colSums(stb.bin, na.rm = T)/apply(stb.y, 2, function(x) length(na.exclude(x)))
+
+# make prediction plots here w/ respect to covariates of top model AND
+# provide estimates and uncertainty of occupancy
+par(mfrow=c(2,2), mar = c(4,4,2,2))
+ylim = c(0,1)
+plot( nd$date, col.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Date', ylab = 'P(Colonization)')
+lines( nd$date, col.preds$lower )
+lines( nd$date, col.preds$upper )
+plot( nd$rkm, psi.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1, ylab = 'Initial Occupancy', ylim = ylim, 
+      xlab = 'River Kilometer')
+lines( nd$rkm, psi.preds$lower )
+lines( nd$rkm, psi.preds$upper )
+plot( nd$effort, det.preds$Predicted, type = 'l', lwd = 2, 
+      las = 1,  ylim = ylim, 
+      xlab = 'Effort (Seconds)', ylab = 'P(Detection)')
+lines( nd$effort, det.preds$lower )
+lines( nd$effort, det.preds$upper )
+
+plot( pred.2021.gt$event, pred.2021.gt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = 'Event', ylab = 'Occupancy Estimate +/- 1 SE', axes = F)
+# add naive estimate of occupancy #
+points( pred.2021.gt$event, c( mean( props21gt[1:2]), mean( props21gt[3:4]), 
+                                mean( props21gt[5:6]), mean( props21gt[7:8]), mean( props21gt[9:10]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2021.gt$event, pred.2021.gt$smoothed + pred.2021.gt$SE, 
+          pred.2021.gt$event, pred.2021.gt$smoothed - pred.2021.gt$SE, lwd = 2, lend =2)
+points( pred.2021.gt$event, pred.2021.gt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:5, labels = 1:5 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+legend( 1.2, 0.95, c( 'Naive Estimate', 'Model Estimate'), pch =21, pt.cex = 2, pt.bg = c( 'grey80', 'grey50'), bty = 'n', cex =1.1)
+box( 'plot')
+mtext( side = 3, line = -1, outer = T, '2021 - Striped bass ≥ 300 mm FL', adj = 0, cex = 1.2 )
+```
+
+Show naive and predicted values for seasonal striped bass occupancy across all study years (2019 - 2021) together in one plot
+```{r}
+par(mfrow=c(3,2), oma = c(2,2,0,0))
+ylim = c(0,1)
+
+# 2019
+ #---------------------------------------------------------------------------
+
+# small striped bass
+plot( pred.2019.lt$event, pred.2019.lt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = '', ylab = '', main = '2019 - Striped bass < 300 mm FL', axes = F)
+# add naive estimate of occupancy #
+points( pred.2019.lt$event, c( mean( props19lt[1:2]), mean( props19lt[3:4]), mean( props19lt[5:6]), mean( props19lt[7:8]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2019.lt$event, pred.2019.lt$smoothed_occ + pred.2019.lt$SE, pred.2019.lt$event, pred.2019.lt$smoothed_occ - pred.2019.lt$SE, lwd = 2, lend =2)
+points( pred.2019.lt$event, pred.2019.lt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:4, labels = 1:4 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+box( 'plot')
+
+# large striped bass
+plot( pred.2019.gt$event, pred.2019.gt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = '', ylab = '', main = '2019 - Striped bass ≥ 300 mm FL', axes = F)
+# add naive estimate of occupancy #
+points( pred.2019.gt$event, c( mean( props19gt[1:2]), mean( props19gt[3:4]), mean( props19gt[5:6]), mean( props19gt[7:8]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2019.gt$event, pred.2019.gt$smoothed_occ + pred.2019.gt$SE, pred.2019.gt$event, pred.2019.gt$smoothed_occ - pred.2019.gt$SE, lwd = 2, lend =2)
+points( pred.2019.gt$event, pred.2019.gt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:4, labels = 1:4 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+box( 'plot')
+
+# 2020
+  # -------------------------------------------------------------------------
+# small striped bass
+plot( pred.2020.lt$event, pred.2020.lt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = '', ylab = '', main = '2020 - Striped bass < 300 mm FL', axes = F)
+# add naive estimate of occupancy #
+points( pred.2020.lt$event, c( mean( props20lt[1:2]), mean( props20lt[3:4]), mean( props20lt[5:6]), mean( props20lt[7:8]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2020.lt$event, pred.2020.lt$smoothed_occ + pred.2020.lt$SE, pred.2020.lt$event, pred.2020.lt$smoothed_occ - pred.2020.lt$SE, lwd = 2, lend =2)
+points( pred.2020.lt$event, pred.2020.lt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:4, labels = 1:4 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+box( 'plot')
+
+# large striped bass
+plot( pred.2020.lt$event, pred.2020.lt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = '', ylab = '', main = '2020 - Striped bass ≥ 300 mm FL', axes = F)
+# add naive estimate of occupancy #
+points( pred.2020.gt$event, c( mean( props20gt[1:2]), mean( props20gt[3:4]), mean( props20gt[5:6]), mean( props20gt[7:8]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2020.gt$event, pred.2020.gt$smoothed_occ + pred.2020.gt$SE, pred.2020.gt$event, pred.2020.gt$smoothed_occ - pred.2020.gt$SE, lwd = 2, lend =2)
+points( pred.2020.gt$event, pred.2020.gt$smoothed_occ, pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:4, labels = 1:4 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+box( 'plot')
+
+# 2021
+  # ------------------------------------------------------------------------
+# small striped bass
+plot( pred.2021.lt$event, pred.2021.lt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = '', ylab = '', main = '2021 - Striped bass < 300 mm FL', axes = F)
+# add naive estimate of occupancy #
+points( pred.2021.lt$event, c( mean( props21lt[1:2]), mean( props21lt[3:4]), mean( props21lt[5:6]), mean( props21lt[7:8]), mean( props21lt[9:10]) ),
+        pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2021.lt$event, pred.2021.lt$smoothed_occ + pred.2021.lt$SE, 
+          pred.2021.lt$event, pred.2021.lt$smoothed_occ - pred.2021.lt$SE, lwd = 2, lend =2)
+points( pred.2021.lt$event, pred.2021.lt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:5, labels = 1:5 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+box( 'plot')
+
+# large striped bass
+plot( pred.2021.gt$event, pred.2021.gt$smoothed_occ, ylim = ylim, type = 'n', las = 1, xlab = '', ylab = '', main = '2021 - Striped bass ≥ 300 mm FL', axes = F)
+# add naive estimate of occupancy #
+points( pred.2021.gt$event, c( mean( props21gt[1:2]), mean( props21gt[3:4]), mean( props21gt[5:6]), mean( props21gt[7:8]), mean (props21gt[9:10]) ), pch = 21, bg = 'grey80', cex = 2.1 )
+segments( pred.2021.gt$event, pred.2021.gt$smoothed_occ + pred.2021.gt$SE, 
+          pred.2021.gt$event, pred.2021.gt$smoothed_occ - pred.2021.gt$SE, lwd = 2, lend =2)
+points( pred.2021.gt$event, pred.2021.gt$smoothed_occ,
+      pch = 21, bg = 'grey50', cex = 2.1 )
+axis( side =1, at = 1:4, labels = 1:4 )
+axis( side =2, at = seq(0,1,0.2), labels = seq(0,1,0.2), las = 1)
+box( 'plot')
+
+mtext(side = 1, line = 0, outer = T, 'Primary sampling event', cex = 0.8, las =0)
+mtext(side = 2, line = 0, outer = T, 'Seasonal occupancy', cex = 0.8, las = 0)
+```
+The ploting window & pop-out plot window are both too small to show the lower right-hand plot and the axes. However, the full plot shows when the code is trasnferred to an R Script.
